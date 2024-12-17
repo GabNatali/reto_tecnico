@@ -1,0 +1,294 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	_ "net/http/pprof"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/pprof"
+	"strings"
+	"sync"
+)
+
+var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
+var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
+
+func main() {
+
+	flag.Parse()
+	args := flag.Args()
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatalf("error create file: %v", err)
+		}
+		defer f.Close()
+
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatalf("error cpu profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+
+	}
+
+	done := make(chan interface{})
+	defer close(done)
+
+	if len(args) < 1 {
+		log.Fatalln("Enter the folder path")
+	}
+
+	folderPath := args[0]
+	numWorkers := runtime.NumCPU()
+
+	pathFiles := getPathFile(folderPath)
+	pathf := make(chan string)
+
+	go func() {
+		for path := range pathFiles {
+			pathf <- path
+		}
+		close(pathf)
+	}()
+
+	fileReadChannels := make([]<-chan map[string]string, numWorkers)
+
+	for i := 0; i < numWorkers; i++ {
+		fileReadChannels[i] = ProcessFile(done, pathf)
+	}
+
+	chunk := make([]map[string]string, 0, 2000)
+	for result := range mergeFilesChannels(done, fileReadChannels...) {
+		chunk = append(chunk, result)
+		if len(chunk) >= 2000 {
+			sendToOpenObserver(chunk)
+			chunk = chunk[:0]
+		}
+	}
+
+	if len(chunk) > 0 {
+		sendToOpenObserver(chunk)
+	}
+
+	if *memprofile != "" {
+		f, err := os.Create(*memprofile)
+		if err != nil {
+			log.Fatal("could not create memory profile: ", err)
+		}
+		defer f.Close() // error handling omitted for example
+		runtime.GC()    // get up-to-date statistics
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			log.Fatal("could not write memory profile: ", err)
+		}
+	}
+
+	fmt.Println("Fin del programa.")
+}
+
+func getPathFile(pathDir string) <-chan string {
+
+	out := make(chan string)
+	go func() {
+
+		err := filepath.WalkDir(pathDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !d.IsDir() {
+				out <- path
+			}
+			return nil
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		close(out)
+	}()
+
+	return out
+}
+
+func mergeFilesChannels(done <-chan interface{}, channels ...<-chan map[string]string) <-chan map[string]string {
+
+	var wg sync.WaitGroup
+
+	merged := make(chan map[string]string)
+
+	out := func(c <-chan map[string]string) {
+		defer wg.Done()
+		for v := range c {
+			select {
+			case <-done:
+				return
+			case merged <- v:
+			}
+		}
+	}
+
+	for _, c := range channels {
+		wg.Add(1)
+		go out(c)
+	}
+
+	go func() {
+		wg.Wait()
+		close(merged)
+	}()
+
+	return merged
+}
+
+func sendToOpenObserver(chunk []map[string]string) {
+
+	jsonData, err := json.Marshal(chunk)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	orgID := "default"
+	streamName := "demo6"
+	url := fmt.Sprintf("http://localhost:5080/api/%s/%s/_json", orgID, streamName)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+
+	if err != nil {
+		log.Fatal("Error al crear la solicitud:", err)
+	}
+
+	req.SetBasicAuth("gabnat@gmail.com", "Gab#123")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal("Error al enviar los datos:", err)
+	}
+
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(string(body))
+}
+
+func ProcessFile(done <-chan interface{}, pathFiles <-chan string) <-chan map[string]string {
+	var commonHeader map[string]string
+	var commonHeaderOnce sync.Once
+
+	initCommonHeader := func() {
+
+		commonHeader = make(map[string]string)
+		for _, v := range []string{
+			"Message-ID",
+			"Date",
+			"From",
+			"To",
+			"Subject",
+			"Mime-Version",
+			"Content-Type",
+			"Content-Transfer-Encoding",
+			"X-From",
+			"X-To",
+			"X-cc",
+			"X-bcc",
+			"Cc",
+			"X-Folder",
+			"X-Origin",
+			"X-FileName",
+		} {
+			commonHeader[v] = v
+		}
+	}
+
+	valideKey := func(key string) bool {
+		commonHeaderOnce.Do(initCommonHeader)
+		if v := commonHeader[key]; v != "" {
+			return true
+		}
+		return false
+	}
+
+	readFile := func(path string) map[string]string {
+		file, err := os.Open(path)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer file.Close()
+
+		var bodyLines []string
+		var currentKey string
+
+		headers := make(map[string]string)
+		scanner := bufio.NewScanner(file)
+
+		isHeader := true
+
+		for scanner.Scan() {
+
+			line := scanner.Text()
+
+			if isHeader {
+
+				if len(line) == 0 {
+					isHeader = false
+					continue
+				}
+
+				key, value, ok := strings.Cut(line, ":")
+
+				if ok {
+					if !valideKey(key) {
+						headers[currentKey] = headers[currentKey] + line
+						continue
+					}
+
+					currentKey = strings.ToLower(key)
+					headers[currentKey] = headers[currentKey] + value
+					continue
+				}
+
+				headers[currentKey] = headers[currentKey] + key
+			}
+
+			if !isHeader {
+				bodyLines = append(bodyLines, line)
+			}
+		}
+
+		headers["body"] = strings.Join(bodyLines, "\n")
+
+		return headers
+	}
+
+	fileRead := make(chan map[string]string)
+	go func() {
+		defer close(fileRead)
+
+		for {
+			select {
+			case <-done:
+				return
+			case path, ok := <-pathFiles:
+				if !ok {
+					return
+				}
+				fileRead <- readFile(path)
+			}
+		}
+
+	}()
+
+	return fileRead
+}
