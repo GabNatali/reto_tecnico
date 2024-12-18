@@ -12,178 +12,101 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
-	"runtime"
-	"runtime/pprof"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
-var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
+// var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
+// var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
 
 func main() {
-
+	type token struct{}
+	limit := 100
 	flag.Parse()
 	args := flag.Args()
-
-	if *cpuprofile != "" {
-		f, err := os.Create(*cpuprofile)
-		if err != nil {
-			log.Fatalf("error create file: %v", err)
-		}
-		defer f.Close()
-
-		if err := pprof.StartCPUProfile(f); err != nil {
-			log.Fatalf("error cpu profile: %v", err)
-		}
-		defer pprof.StopCPUProfile()
-
-	}
-
-	done := make(chan interface{})
-	defer close(done)
 
 	if len(args) < 1 {
 		log.Fatalln("Enter the folder path")
 	}
 
 	folderPath := args[0]
-	numWorkers := runtime.NumCPU()
+	out := make(chan string)
+	go getPathFile(folderPath, out)
 
-	pathFiles := getPathFile(folderPath)
-	pathf := make(chan string)
-
+	var wg sync.WaitGroup
+	sem := make(chan token, limit)
+	fileReadChannels := make(chan map[string]string)
 	go func() {
-		for path := range pathFiles {
-			pathf <- path
+		for pathFile := range out {
+			sem <- token{}
+			wg.Add(1)
+
+			go func(p string) {
+				defer wg.Done()
+				fileReadChannels <- readFile(p)
+				<-sem
+			}(pathFile)
 		}
-		close(pathf)
+
+		wg.Wait()
+		close(fileReadChannels)
 	}()
-
-	fileReadChannels := make([]<-chan map[string]string, numWorkers)
-
-	for i := 0; i < numWorkers; i++ {
-		fileReadChannels[i] = ProcessFile(done, pathf)
-	}
-
-	chunk := make([]map[string]string, 0, 2000)
-	for result := range mergeFilesChannels(done, fileReadChannels...) {
-		chunk = append(chunk, result)
+	maxChunk := 2000
+	chunk := make([]map[string]string, 0, maxChunk)
+	var sendWg sync.WaitGroup
+	semOpen := make(chan token, 10)
+	for fileRead := range fileReadChannels {
+		chunk = append(chunk, fileRead)
 		if len(chunk) >= 2000 {
-			sendToOpenObserver(chunk)
+			sendWg.Add(1)
+			data := append([]map[string]string{}, chunk...)
+			go func(data []map[string]string) {
+				defer sendWg.Done()
+				semOpen <- token{}
+				sendToOpenObserver(data)
+				<-semOpen
+			}(data)
+
 			chunk = chunk[:0]
 		}
 	}
 
+	// for n := 10; n > 0; n-- {
+	// 	semOpen <- token{}
+	// }
+
 	if len(chunk) > 0 {
-		sendToOpenObserver(chunk)
+		sendWg.Add(1)
+		data := append([]map[string]string{}, chunk...)
+		go func(data []map[string]string) {
+			defer sendWg.Done()
+			sendToOpenObserver(data)
+		}(data)
 	}
 
-	if *memprofile != "" {
-		f, err := os.Create(*memprofile)
+	sendWg.Wait()
+}
+
+func getPathFile(pathDir string, out chan string) {
+	err := filepath.WalkDir(pathDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			log.Fatal("could not create memory profile: ", err)
+			return err
 		}
-		defer f.Close() // error handling omitted for example
-		runtime.GC()    // get up-to-date statistics
-		if err := pprof.WriteHeapProfile(f); err != nil {
-			log.Fatal("could not write memory profile: ", err)
+		if !d.IsDir() {
+			out <- path
 		}
-	}
+		return nil
+	})
 
-	fmt.Println("Fin del programa.")
-}
-
-func getPathFile(pathDir string) <-chan string {
-
-	out := make(chan string)
-	go func() {
-
-		err := filepath.WalkDir(pathDir, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if !d.IsDir() {
-				out <- path
-			}
-			return nil
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		close(out)
-	}()
-
-	return out
-}
-
-func mergeFilesChannels(done <-chan interface{}, channels ...<-chan map[string]string) <-chan map[string]string {
-
-	var wg sync.WaitGroup
-
-	merged := make(chan map[string]string)
-
-	out := func(c <-chan map[string]string) {
-		defer wg.Done()
-		for v := range c {
-			select {
-			case <-done:
-				return
-			case merged <- v:
-			}
-		}
-	}
-
-	for _, c := range channels {
-		wg.Add(1)
-		go out(c)
-	}
-
-	go func() {
-		wg.Wait()
-		close(merged)
-	}()
-
-	return merged
-}
-
-func sendToOpenObserver(chunk []map[string]string) {
-
-	jsonData, err := json.Marshal(chunk)
-	if err != nil {
-		log.Fatal(err)
-		return
-	}
-
-	orgID := "default"
-	streamName := "demo6"
-	url := fmt.Sprintf("http://localhost:5080/api/%s/%s/_json", orgID, streamName)
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-
-	if err != nil {
-		log.Fatal("Error al crear la solicitud:", err)
-	}
-
-	req.SetBasicAuth("gabnat@gmail.com", "Gab#123")
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatal("Error al enviar los datos:", err)
-	}
-
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(string(body))
+	close(out)
 }
 
-func ProcessFile(done <-chan interface{}, pathFiles <-chan string) <-chan map[string]string {
+func readFile(path string) map[string]string {
+
 	var commonHeader map[string]string
 	var commonHeaderOnce sync.Once
 
@@ -220,75 +143,91 @@ func ProcessFile(done <-chan interface{}, pathFiles <-chan string) <-chan map[st
 		return false
 	}
 
-	readFile := func(path string) map[string]string {
-		file, err := os.Open(path)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer file.Close()
+	file, err := os.Open(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
 
-		var bodyLines []string
-		var currentKey string
+	var bodyLines []string
+	var currentKey string
 
-		headers := make(map[string]string)
-		scanner := bufio.NewScanner(file)
+	headers := make(map[string]string)
+	scanner := bufio.NewScanner(file)
 
-		isHeader := true
+	isHeader := true
 
-		for scanner.Scan() {
+	for scanner.Scan() {
 
-			line := scanner.Text()
+		line := scanner.Text()
 
-			if isHeader {
+		if isHeader {
 
-				if len(line) == 0 {
-					isHeader = false
+			if len(line) == 0 {
+				isHeader = false
+				continue
+			}
+
+			key, value, ok := strings.Cut(line, ":")
+
+			if ok {
+				if !valideKey(key) {
+					headers[currentKey] = headers[currentKey] + line
 					continue
 				}
 
-				key, value, ok := strings.Cut(line, ":")
-
-				if ok {
-					if !valideKey(key) {
-						headers[currentKey] = headers[currentKey] + line
-						continue
-					}
-
-					currentKey = strings.ToLower(key)
-					headers[currentKey] = headers[currentKey] + value
-					continue
-				}
-
-				headers[currentKey] = headers[currentKey] + key
+				currentKey = strings.ToLower(key)
+				headers[currentKey] = headers[currentKey] + value
+				continue
 			}
 
-			if !isHeader {
-				bodyLines = append(bodyLines, line)
-			}
+			headers[currentKey] = headers[currentKey] + key
 		}
 
-		headers["body"] = strings.Join(bodyLines, "\n")
-
-		return headers
+		if !isHeader {
+			bodyLines = append(bodyLines, line)
+		}
 	}
 
-	fileRead := make(chan map[string]string)
-	go func() {
-		defer close(fileRead)
+	headers["body"] = strings.Join(bodyLines, "\n")
 
-		for {
-			select {
-			case <-done:
-				return
-			case path, ok := <-pathFiles:
-				if !ok {
-					return
-				}
-				fileRead <- readFile(path)
-			}
-		}
+	return headers
+}
 
-	}()
+var total int32
 
-	return fileRead
+func sendToOpenObserver(chunk []map[string]string) {
+
+	jsonData, err := json.Marshal(chunk)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	orgID := "default"
+	streamName := "demo16"
+	url := fmt.Sprintf("http://localhost:5080/api/%s/%s/_json", orgID, streamName)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+
+	if err != nil {
+		log.Fatal("Error al crear la solicitud:", err)
+	}
+
+	req.SetBasicAuth("gabnat@gmail.com", "Gab#123")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal("Error al enviar los datos:", err)
+	}
+
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(string(body))
+	fmt.Println("count:", atomic.AddInt32(&total, 1))
 }
