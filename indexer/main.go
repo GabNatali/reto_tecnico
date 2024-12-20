@@ -15,13 +15,17 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
 )
 
 // var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
 // var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
+// var regex = regexp.MustCompile(`[A-Z][a-z]{2},\s\d{1,2}\s[A-Z][a-z]{2}\s\d{4}\s\d{2}:\d{2}:\d{2}\s[+-]\d{4}`)
 
 func main() {
 	type token struct{}
+
 	limit := 100
 	flag.Parse()
 	args := flag.Args()
@@ -30,6 +34,23 @@ func main() {
 		log.Fatalln("Enter the folder path")
 	}
 
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error cargando el archivo .env:", err)
+	}
+
+	HTTP_API := os.Getenv("HTTP_API")
+	ORG_ID := os.Getenv("ORG_ID")
+	STREAM := os.Getenv("STREAM")
+	TOKEN := os.Getenv("TOKEN")
+
+	client := NewOpenObserverClient(
+		HTTP_API,
+		ORG_ID,
+		STREAM,
+		TOKEN,
+	)
+
 	folderPath := args[0]
 	out := make(chan string)
 	go getPathFile(folderPath, out)
@@ -37,6 +58,7 @@ func main() {
 	var wg sync.WaitGroup
 	sem := make(chan token, limit)
 	fileReadChannels := make(chan map[string]string)
+
 	go func() {
 		for pathFile := range out {
 			sem <- token{}
@@ -52,19 +74,20 @@ func main() {
 		wg.Wait()
 		close(fileReadChannels)
 	}()
+
 	maxChunk := 2000
 	chunk := make([]map[string]string, 0, maxChunk)
 	var sendWg sync.WaitGroup
 	semOpen := make(chan token, 10)
 	for fileRead := range fileReadChannels {
 		chunk = append(chunk, fileRead)
-		if len(chunk) >= 2000 {
+		if len(chunk) >= maxChunk {
 			sendWg.Add(1)
 			data := append([]map[string]string{}, chunk...)
 			go func(data []map[string]string) {
 				defer sendWg.Done()
 				semOpen <- token{}
-				sendToOpenObserver(data)
+				client.send(data)
 				<-semOpen
 			}(data)
 
@@ -72,16 +95,12 @@ func main() {
 		}
 	}
 
-	// for n := 10; n > 0; n-- {
-	// 	semOpen <- token{}
-	// }
-
 	if len(chunk) > 0 {
 		sendWg.Add(1)
 		data := append([]map[string]string{}, chunk...)
 		go func(data []map[string]string) {
 			defer sendWg.Done()
-			sendToOpenObserver(data)
+			client.send(data)
 		}(data)
 	}
 
@@ -171,17 +190,18 @@ func readFile(path string) map[string]string {
 			key, value, ok := strings.Cut(line, ":")
 
 			if ok {
+
 				if !valideKey(key) {
-					headers[currentKey] = headers[currentKey] + line
+					headers[currentKey] += strings.TrimSpace(line)
 					continue
 				}
 
 				currentKey = strings.ToLower(key)
-				headers[currentKey] = headers[currentKey] + value
+				headers[currentKey] += strings.TrimSpace(value)
 				continue
 			}
 
-			headers[currentKey] = headers[currentKey] + key
+			headers[currentKey] += " " + strings.TrimSpace(key)
 		}
 
 		if !isHeader {
@@ -196,38 +216,54 @@ func readFile(path string) map[string]string {
 
 var total int32
 
-func sendToOpenObserver(chunk []map[string]string) {
+type OpenObserverClient struct {
+	client     *http.Client
+	orgID      string
+	streamName string
+	authHeader string
+	baseURL    string
+}
+
+func NewOpenObserverClient(http_api, orgID, streamName, authHeader string) *OpenObserverClient {
+	url := fmt.Sprintf("%s/%s/%s/_json", http_api, orgID, streamName)
+	return &OpenObserverClient{
+		client:     &http.Client{},
+		orgID:      orgID,
+		streamName: streamName,
+		authHeader: authHeader,
+		baseURL:    url,
+	}
+}
+
+func (ooc *OpenObserverClient) send(chunk []map[string]string) (string, error) {
 
 	jsonData, err := json.Marshal(chunk)
 	if err != nil {
-		log.Fatal(err)
-		return
+		return "", err
 	}
 
-	orgID := "default"
-	streamName := "demo16"
-	url := fmt.Sprintf("http://localhost:5080/api/%s/%s/_json", orgID, streamName)
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-
+	req, err := http.NewRequest("POST", ooc.baseURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		log.Fatal("Error al crear la solicitud:", err)
+		return "", err
 	}
 
-	req.SetBasicAuth("gabnat@gmail.com", "Gab#123")
+	req.Header.Set("Authorization", ooc.authHeader)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := ooc.client.Do(req)
+
 	if err != nil {
-		log.Fatal("Error al enviar los datos:", err)
+		return "", err
 	}
 
 	defer resp.Body.Close()
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
-	fmt.Println(string(body))
+
+	fmt.Println("body", string(body))
 	fmt.Println("count:", atomic.AddInt32(&total, 1))
+	return string(body), nil
 }
