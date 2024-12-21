@@ -18,8 +18,8 @@ function emitFilter() {
 </script>
 
 <template>
-  <div class="flex flex-1">
-    <div class="w-full relative bg-white lg:w-1/3">
+  <div class="flex">
+    <div class="w-9/10 relative bg-white lg:w-[450px]">
       <div class="relative">
         <input
           class="bg-white w-full pr-11 h-10 pl-2 py-2 bg-transparent placeholder:text-slate-400 text-slate-700 text-sm border border-slate-200 rounded transition duration-300 ease focus:outline-none focus:border-slate-400 hover:border-slate-400 shadow-sm focus:shadow-md"

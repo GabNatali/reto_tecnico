@@ -8,3 +8,6 @@ export interface IParams {
   end_time: string
   stream_log: string
 }
+
+
+export type TimeUnit = 'minute' | 'hour' | 'day' | 'week';

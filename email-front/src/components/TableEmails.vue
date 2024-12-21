@@ -6,6 +6,7 @@ interface Props {
   data: IEmail[]
   currentPage: number
   pageSize: number
+  isSelected: boolean
 }
 const selected = ref<IEmail | null>(null)
 const props = defineProps<Props>()
@@ -26,12 +27,12 @@ const selectedRow = (email: IEmail) => {
       <table class="w-full text-sm text-left rtl:text-right">
         <thead class="text-xs text-gray-700 border-b-2 border-b-gray-300 uppercase">
           <tr>
-            <th scope="col" class="pl-2 py-3 sticky top-0 border-b bg-gray-100 w-1">Nro</th>
+            <th scope="col" class="pl-2 py-3 sticky top-0 border-b bg-white w-1">Nro</th>
             <th
               v-for="(column, index) in displayColumn"
               :key="index"
               scope="col"
-              class="pl-2 py-3 sticky top-0 border-b bg-gray-100"
+              class="pl-2 py-3 sticky top-0 border-b bg-white"
             >
               {{ column }}
             </th>
@@ -44,7 +45,7 @@ const selectedRow = (email: IEmail) => {
             class="border-b border-b-gray-200 pointer"
             @click="selectedRow(email)"
             :class="{
-              'bg-blue-100': selected && selected.message_id === email.message_id,
+              'bg-blue-100': isSelected && selected && selected.message_id === email.message_id,
               'bg-white': !selected || selected.message_id !== email.message_id,
             }"
           >
