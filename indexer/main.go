@@ -19,10 +19,6 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to `file`")
-// var memprofile = flag.String("memprofile", "", "write memory profile to `file`")
-// var regex = regexp.MustCompile(`[A-Z][a-z]{2},\s\d{1,2}\s[A-Z][a-z]{2}\s\d{4}\s\d{2}:\d{2}:\d{2}\s[+-]\d{4}`)
-
 func main() {
 	type token struct{}
 
@@ -42,13 +38,15 @@ func main() {
 	HTTP_API := os.Getenv("HTTP_API")
 	ORG_ID := os.Getenv("ORG_ID")
 	STREAM := os.Getenv("STREAM")
-	TOKEN := os.Getenv("TOKEN")
+	USER := os.Getenv("ZO_ROOT_USER_EMAIL")
+	PASSWORD := os.Getenv("ZO_ROOT_USER_PASSWORD")
 
 	client := NewOpenObserverClient(
 		HTTP_API,
 		ORG_ID,
 		STREAM,
-		TOKEN,
+		USER,
+		PASSWORD,
 	)
 
 	folderPath := args[0]
@@ -105,6 +103,7 @@ func main() {
 	}
 
 	sendWg.Wait()
+
 }
 
 func getPathFile(pathDir string, out chan string) {
@@ -220,17 +219,20 @@ type OpenObserverClient struct {
 	client     *http.Client
 	orgID      string
 	streamName string
-	authHeader string
+	user       string
+	password   string
+	Http_api   string
 	baseURL    string
 }
 
-func NewOpenObserverClient(http_api, orgID, streamName, authHeader string) *OpenObserverClient {
+func NewOpenObserverClient(http_api, orgID, streamName, user, password string) *OpenObserverClient {
 	url := fmt.Sprintf("%s/%s/%s/_json", http_api, orgID, streamName)
 	return &OpenObserverClient{
 		client:     &http.Client{},
 		orgID:      orgID,
 		streamName: streamName,
-		authHeader: authHeader,
+		user:       user,
+		password:   password,
 		baseURL:    url,
 	}
 }
@@ -247,7 +249,7 @@ func (ooc *OpenObserverClient) send(chunk []map[string]string) (string, error) {
 		return "", err
 	}
 
-	req.Header.Set("Authorization", ooc.authHeader)
+	req.SetBasicAuth(ooc.user, ooc.password)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := ooc.client.Do(req)
@@ -262,8 +264,7 @@ func (ooc *OpenObserverClient) send(chunk []map[string]string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	fmt.Println("body", string(body))
+	fmt.Println(string(body))
 	fmt.Println("count:", atomic.AddInt32(&total, 1))
 	return string(body), nil
 }
