@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineProps, defineEmits, ref } from 'vue'
+import { computed, defineProps, defineEmits, ref, watch } from 'vue'
 
 interface Props {
   totalItems: number
@@ -22,11 +22,17 @@ const changePage = (page: number) => {
   }
 }
 
-const changePageSize = (event: Event) => {
-  const newSize = Number((event.target as HTMLSelectElement).value)
+const changePageSize = (newSize: number ) => {
   localPageSize.value = newSize
   emit('page-size-change', newSize)
 }
+
+watch(
+  () => props.pageSize,
+  (newSize) => {
+    changePageSize(newSize);
+  }
+);
 </script>
 
 <template>
@@ -36,7 +42,7 @@ const changePageSize = (event: Event) => {
 
       <select
         v-model="localPageSize"
-        @change="changePageSize"
+        @change="(event) => changePageSize(Number((event.target as HTMLSelectElement).value))"
         class="border border-gray-300 rounded px-2 py-1"
       >
         <option v-for="size in pageSizeOptions" :key="size" :value="size">

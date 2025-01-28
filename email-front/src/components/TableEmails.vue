@@ -10,8 +10,8 @@ interface Props {
 }
 const selected = ref<IEmail | null>(null)
 const props = defineProps<Props>()
-const columns: (keyof IEmail)[] = ['subject', 'to', 'from']
-const displayColumn = ['subject', 'to', 'from']
+const columns: (keyof IEmail)[] = ['subject', 'to', 'from', 'date']
+const displayColumn = ['subject', 'to', 'from' , 'date']
 
 const emit = defineEmits(['select'])
 const selectedRow = (email: IEmail) => {

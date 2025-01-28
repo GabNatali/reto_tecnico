@@ -1,61 +1,58 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import {  initDropdowns } from 'flowbite'
-import type { IParams, TimeUnit } from '@/interfaces';
+import type {TimeUnit } from '@/interfaces';
 import { parseTime } from '@/actions/partseTime';
 
 const filters = ref({
   from:"",
   to:"",
-  timestampH:15,
-  timestampM:'hour' as TimeUnit
+  timestampH:50,
+  timestampM:'day' as TimeUnit
 })
 
-
-const filtersOptions = ref<IParams>({
-  from:"",
-  start_time: "",
-  end_time : "",
-  stream_log: "",
-  fromEmail:"",
-  subject: "",
-  to: "",
-  size: "",
-
-})
 
 const emit = defineEmits(['send-filters'])
 
+
+const getTime = () => {
+
+  const {endTime , startTime } = parseTime(filters.value.timestampH,filters.value.timestampM)
+
+  const dataEmit = {
+    start_time: startTime.toString(),
+    end_time: endTime.toString(),
+  }
+
+  return dataEmit
+}
+
 const sendFilters = () => {
-const{endTime , startTime } = parseTime(filters.value.timestampH,filters.value.timestampM)
 
-filtersOptions.value.start_time = startTime.toString()
-filtersOptions.value.end_time = endTime.toString()
-filtersOptions.value.fromEmail = filters.value.from
-filtersOptions.value.to = filters.value.to
+  const dataEmit = {
+    ...getTime(),
+    to: filters.value.to,
+    fromEmail: filters.value.from
+  }
 
-  emit('send-filters', filtersOptions.value)
+  emit('send-filters', dataEmit)
+
 }
 
 const clearFilters = () => {
   filters.value = {
     from:"",
     to:"",
-    timestampH:15,
-    timestampM:"hour"
+    timestampH:50,
+    timestampM:"day"
   }
+  emit('send-filters', getTime())
 
-  const{endTime , startTime } = parseTime(filters.value.timestampH,filters.value.timestampM)
-
-  filtersOptions.value.start_time = startTime.toString()
-  filtersOptions.value.end_time = endTime.toString()
-  filtersOptions.value.fromEmail = filters.value.from
-  filtersOptions.value.to = filters.value.to
-
-  emit('send-filters', filtersOptions.value)
 }
+
 onMounted(() => {
   initDropdowns();
+  emit('send-filters', getTime())
 })
 </script>
 

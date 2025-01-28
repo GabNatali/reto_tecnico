@@ -4,19 +4,16 @@ import SearchApp from '../components/SearchApp.vue'
 import Paginator from '../components/PaginatorTable.vue'
 import TableEmails from '../components/TableEmails.vue'
 import type { IEmail, IEmailResponse, IParams } from '../interfaces'
-import { computed, onMounted, ref } from 'vue'
+import { ref, watch } from 'vue'
 import ContentEmail from './ContentEmail.vue'
 import { useToast } from 'vue-toastification'
 import FiltersOptions from './FiltersOptions.vue'
-import { parseTime } from '@/actions/partseTime'
 
 const isLoading = ref(false)
-const unitDefault = "hour"
-const amountDefault = 15
 const toast = useToast()
+
 // paginator
 const currentPage = ref(1)
-const currentpageSize = ref(500)
 const isSelected = ref(false)
 const rowSelected = ref<IEmail>({
   _timestamp: 0,
@@ -28,66 +25,71 @@ const rowSelected = ref<IEmail>({
   to: '',
 })
 
+const filters = ref<IParams>({
+  fromEmail: '',
+  to: '',
+  subject: '',
+  from: '1',
+  size: '500',
+  start_time:'',
+  end_time: '',
+  stream_log: 'email_l3'
+})
+
+
 const pageChange = async (page: number) => {
+  console.log('pageChange', page)
   isSelected.value = false
+  filters.value = {
+    ...filters.value,
+    from: ((page - 1) * Number(filters.value.size)).toString()
+  }
+
   currentPage.value = page
-  params.value.from = ((page - 1) * currentpageSize.value).toString()
-  getEmails(params.value)
+
 }
 
 const pageSizeChange = async (pageSize: number) => {
-  currentpageSize.value = pageSize
+
+  filters.value = {
+    ...filters.value,
+    size: pageSize.toString(),
+    from: '1'
+  }
   currentPage.value = 1
   isSelected.value = false
-  getEmails(params.value)
 }
 
-const{endTime , startTime } = parseTime(amountDefault,unitDefault)
-
-
-const params = computed<IParams>(() => {
-  return {
-    fromEmail: '',
-    subject: '',
-    to: '',
-    from: (currentPage.value - 1).toString(),
-    size: currentpageSize.value.toString(),
-    start_time:startTime.toString(),
-    end_time: endTime.toString(),
-    stream_log: 'email_l3',
+const getFilters = (otherFilters: IParams) => {
+  filters.value = {
+    ...filters.value,
+    ...otherFilters,
+    from: '1',
+    size: '500'
   }
-})
 
-const response = ref<IEmailResponse>({
-  count: 0,
-  results: [],
-})
-
-const getFilters = (filters: IParams) => {
-  currentpageSize.value = 500
-  currentPage.value = 1
-  params.value.end_time = filters.end_time
-  params.value.start_time = filters.start_time
-  params.value.fromEmail = filters.fromEmail
-  params.value.to = filters.to
-  params.value.from = (currentPage.value - 1).toString()
-  params.value.size = currentpageSize.value.toString()
   isSelected.value = false
-  getEmails(params.value)
 }
 
 const getFilterSearch = (search: string) => {
-  params.value.subject = search
-  currentpageSize.value = 500
-  currentPage.value = 1
+  filters.value = {
+    ...filters.value,
+    subject: search,
+    from: '1',
+    size: '500'
+  }
   isSelected.value = false
-  getEmails(params.value)
 }
 
 const emailSelected = (email: IEmail) => {
   isSelected.value = true
   rowSelected.value = email
 }
+
+const response = ref<IEmailResponse>({
+  count: 0,
+  results: [],
+})
 const getEmails = async (params: IParams) => {
   isLoading.value = true
   try {
@@ -99,9 +101,15 @@ const getEmails = async (params: IParams) => {
   }
 }
 
-onMounted(() => {
-  getEmails(params.value)
-})
+watch(
+  filters,
+  (newFilters) => {
+    getEmails(newFilters)
+  },
+  { deep: true }
+)
+
+
 </script>
 
 <template>
@@ -117,13 +125,13 @@ onMounted(() => {
             @select="emailSelected"
             :data="response.results"
             :current-page="currentPage - 1"
-            :page-size="currentpageSize"
+            :page-size="Number(filters.size)"
             :is-selected="isSelected"
           ></TableEmails>
           <Paginator
             :total-items="response.count"
             :current-page="currentPage"
-            :page-size="currentpageSize"
+            :page-size="Number(filters.size)"
             :page-size-options="[100, 250, 500]"
             @page-change="pageChange"
             @page-size-change="pageSizeChange"
